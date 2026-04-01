@@ -1,55 +1,36 @@
-"""
-Upside Down: Tactical Escape
-Turn-based AI-vs-AI game with:
-- Eleven (Max player) using MCTS with UCT
-- Demogorgons (Min side) using Minimax + alpha-beta pruning
-"""
+"""Main game class and logic."""
 
-import copy
-import heapq
 import math
-import random
 from array import array
-from dataclasses import dataclass
-from enum import Enum
-from typing import Dict, List, Optional, Set, Tuple
+from typing import List, Optional, Set, Tuple
 
 import pygame
 
-
-pygame.init()
-try:
-    if pygame.mixer.get_init() is None:
-        pygame.mixer.init(frequency=22050, size=-16, channels=1)
-except pygame.error:
-    pass
+from entities import CARDINALS, Direction, OPPOSITE, Snapshot, add_pos, direction_between, manhattan, AgentState
+from maze import CELL_SIZE, GRID_SIZE, Maze, astar_distance
+from ai.mcts import mcts_action
+from ai.minimax import best_demo_move
 
 
-GRID_SIZE = 12
-CELL_SIZE = 50
+# Constants
 HUD_HEIGHT = 90
 SCREEN_WIDTH = GRID_SIZE * CELL_SIZE
 SCREEN_HEIGHT = GRID_SIZE * CELL_SIZE + HUD_HEIGHT
 FPS = 60
-TURN_DELAY_MS = 0  # No delay - instant continuous execution
+TURN_DELAY_MS = 0
 
 TOTAL_COINS = 3
 NUM_DEMOGORGONS = 3
 TIME_LIMIT_MS = 5 * 60 * 1000
 DETECTION_RADIUS = 4
-SHOOT_COOLDOWN_MS = 2 * 60 * 1000  # 2 minutes between shoots
-MAX_SHOOTS = 2  # 5 min / 2 min cooldown = max 2 shoots
+SHOOT_COOLDOWN_MS = 2 * 60 * 1000
+MAX_SHOOTS = 2
 
-
+# Colors
 COLOR_BG = (18, 14, 22)
 COLOR_HUD = (28, 24, 35)
 COLOR_TEXT = (235, 225, 235)
-COLOR_FLOOR = (52, 46, 60)
-COLOR_WALL = (82, 75, 92)
 COLOR_EXIT = (240, 175, 45)
-COLOR_EXIT_LOCKED = (140, 95, 40)
-COLOR_TUNNEL = (70, 150, 200)
-COLOR_TUNNEL_GLOW = (95, 210, 255)
 COLOR_COIN = (255, 220, 85)
 COLOR_KEY = (255, 245, 140)
 COLOR_ELEVEN = (235, 150, 185)
@@ -58,47 +39,8 @@ COLOR_DETECTION = (155, 60, 70, 45)
 COLOR_DETECTION_INNER = (190, 70, 80, 25)
 
 
-class Direction(Enum):
-    NORTH = (0, -1)
-    SOUTH = (0, 1)
-    EAST = (1, 0)
-    WEST = (-1, 0)
-    NONE = (0, 0)
-
-
-CARDINALS = [Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST]
-OPPOSITE = {
-    Direction.NORTH: Direction.SOUTH,
-    Direction.SOUTH: Direction.NORTH,
-    Direction.EAST: Direction.WEST,
-    Direction.WEST: Direction.EAST,
-    Direction.NONE: Direction.NONE,
-}
-
-
-def add_pos(a: Tuple[int, int], b: Tuple[int, int]) -> Tuple[int, int]:
-    return (a[0] + b[0], a[1] + b[1])
-
-
-def manhattan(a: Tuple[int, int], b: Tuple[int, int]) -> int:
-    return abs(a[0] - b[0]) + abs(a[1] - b[1])
-
-
-def direction_between(src: Tuple[int, int], dst: Tuple[int, int]) -> Direction:
-    dx = dst[0] - src[0]
-    dy = dst[1] - src[1]
-    if dx == 1 and dy == 0:
-        return Direction.EAST
-    if dx == -1 and dy == 0:
-        return Direction.WEST
-    if dx == 0 and dy == 1:
-        return Direction.SOUTH
-    if dx == 0 and dy == -1:
-        return Direction.NORTH
-    return Direction.NONE
-
-
 def build_encounter_sound() -> Optional[pygame.mixer.Sound]:
+    """Generate procedural creepy encounter sound."""
     if pygame.mixer.get_init() is None:
         return None
 
@@ -123,6 +65,7 @@ def build_encounter_sound() -> Optional[pygame.mixer.Sound]:
 
 
 def generate_eleven_sprite(size: int = CELL_SIZE) -> pygame.Surface:
+    """Generate Eleven sprite procedurally."""
     s = pygame.Surface((size, size), pygame.SRCALPHA)
     c = size // 2
     pygame.draw.ellipse(s, (70, 110, 170), (size // 4 - 4, size // 3, size // 2 + 8, size // 2))
@@ -133,6 +76,7 @@ def generate_eleven_sprite(size: int = CELL_SIZE) -> pygame.Surface:
 
 
 def generate_demogorgon_sprite(size: int = CELL_SIZE) -> pygame.Surface:
+    """Generate Demogorgon sprite procedurally."""
     s = pygame.Surface((size, size), pygame.SRCALPHA)
     c = size // 2
     pygame.draw.ellipse(s, (75, 70, 80), (size // 4, size // 3, size // 2, size // 2))
@@ -150,341 +94,6 @@ def generate_demogorgon_sprite(size: int = CELL_SIZE) -> pygame.Surface:
 
     pygame.draw.circle(s, COLOR_DEMOGORGON, (c, size // 4), size // 10)
     return s
-
-
-def generate_floor_tile(size: int = CELL_SIZE) -> pygame.Surface:
-    s = pygame.Surface((size, size))
-    s.fill(COLOR_FLOOR)
-    for _ in range(10):
-        x = random.randint(0, size - 8)
-        y = random.randint(0, size - 8)
-        w = random.randint(6, 18)
-        h = random.randint(6, 18)
-        shift = random.randint(-9, 9)
-        c = (
-            max(0, min(255, COLOR_FLOOR[0] + shift)),
-            max(0, min(255, COLOR_FLOOR[1] + shift)),
-            max(0, min(255, COLOR_FLOOR[2] + shift)),
-        )
-        pygame.draw.rect(s, c, (x, y, w, h))
-    return s
-
-
-def generate_wall_tile(size: int = CELL_SIZE) -> pygame.Surface:
-    s = pygame.Surface((size, size))
-    s.fill(COLOR_WALL)
-    for row in range(4):
-        offset = (row % 2) * (size // 4)
-        for col in range(3):
-            x = col * (size // 2) + offset - size // 4
-            y = row * (size // 4)
-            pygame.draw.rect(s, (95, 88, 105), (x + 2, y + 2, size // 2 - 4, size // 4 - 4))
-    return s
-
-
-@dataclass
-class AgentState:
-    x: int
-    y: int
-    direction: Direction
-    hp: int
-
-    def pos(self) -> Tuple[int, int]:
-        return (self.x, self.y)
-
-
-@dataclass
-class Snapshot:
-    eleven: AgentState
-    demogorgons: List[AgentState]
-    coins: Set[Tuple[int, int]]
-    key_pos: Tuple[int, int]
-    has_key: bool
-    turns_left: int
-    points: int = 0
-    last_shoot_time: int = 0  # Track when Eleven last shot
-
-    def clone(self) -> "Snapshot":
-        return Snapshot(
-            eleven=AgentState(self.eleven.x, self.eleven.y, self.eleven.direction, self.eleven.hp),
-            demogorgons=[AgentState(d.x, d.y, d.direction, d.hp) for d in self.demogorgons],
-            coins=set(self.coins),
-            key_pos=self.key_pos,
-            has_key=self.has_key,
-            turns_left=self.turns_left,
-            points=self.points,
-            last_shoot_time=self.last_shoot_time,
-        )
-
-
-class Maze:
-    def __init__(self, size: int = GRID_SIZE):
-        self.size = size
-        self.walls: Set[Tuple[int, int]] = set()
-        self.exit_pos: Tuple[int, int] = (size - 1, size // 2)
-        self.entry_pos: Tuple[int, int] = (0, 0)  # Will be set after Eleven spawns
-        self.tunnels: Dict[Tuple[int, int], Tuple[int, int]] = {}
-
-        self.floor_tile = generate_floor_tile()
-        self.wall_tile = generate_wall_tile()
-
-        self._generate()
-
-    def _generate(self):
-        self.walls = {(x, y) for x in range(self.size) for y in range(self.size)}
-
-        odd_cells = [i for i in range(1, self.size - 1, 2)]
-        start = (random.choice(odd_cells), random.choice(odd_cells))
-
-        visited = {start}
-        stack = [start]
-        self.walls.discard(start)
-
-        while stack:
-            x, y = stack[-1]
-            neighbors = []
-            for dx, dy in [(2, 0), (-2, 0), (0, 2), (0, -2)]:
-                nx, ny = x + dx, y + dy
-                if 1 <= nx < self.size - 1 and 1 <= ny < self.size - 1 and (nx, ny) not in visited:
-                    neighbors.append((nx, ny, x + dx // 2, y + dy // 2))
-
-            if neighbors:
-                nx, ny, wx, wy = random.choice(neighbors)
-                visited.add((nx, ny))
-                self.walls.discard((wx, wy))
-                self.walls.discard((nx, ny))
-                stack.append((nx, ny))
-            else:
-                stack.pop()
-
-        room_count = random.randint(2, 4)
-        for _ in range(room_count):
-            rw = random.randint(2, 3)
-            rh = random.randint(2, 3)
-            rx = random.randint(1, self.size - rw - 2)
-            ry = random.randint(1, self.size - rh - 2)
-            for y in range(ry, ry + rh):
-                for x in range(rx, rx + rw):
-                    self.walls.discard((x, y))
-
-        loops = random.randint(5, 9)
-        for _ in range(loops):
-            x = random.randint(1, self.size - 2)
-            y = random.randint(1, self.size - 2)
-            if (x, y) not in self.walls:
-                continue
-            floor_neighbors = 0
-            for d in CARDINALS:
-                nx, ny = add_pos((x, y), d.value)
-                if (nx, ny) not in self.walls and 0 <= nx < self.size and 0 <= ny < self.size:
-                    floor_neighbors += 1
-            if floor_neighbors >= 2:
-                self.walls.discard((x, y))
-
-        self._generate_exit()
-        self._generate_tunnels()
-
-    def _generate_exit(self):
-        candidates = []
-        edge_cells = []
-        for i in range(1, self.size - 1):
-            edge_cells.extend([(i, 0, i, 1), (i, self.size - 1, i, self.size - 2), (0, i, 1, i), (self.size - 1, i, self.size - 2, i)])
-
-        random.shuffle(edge_cells)
-        for ex, ey, ix, iy in edge_cells:
-            if (ix, iy) not in self.walls:
-                candidates.append((ex, ey))
-
-        self.exit_pos = random.choice(candidates) if candidates else (self.size - 1, self.size // 2)
-        self.walls.discard(self.exit_pos)
-
-    def _generate_tunnels(self):
-        """Generate 4 interconnected tunnel gates with random exit points.
-        From any gate, exit randomly from one of the other 3 gates."""
-        floor_cells = [
-            (x, y)
-            for x in range(1, self.size - 1)
-            for y in range(1, self.size - 1)
-            if (x, y) not in self.walls
-        ]
-        if len(floor_cells) < 4:
-            return
-
-        # Generate 4 tunnel gates
-        gates = []
-        for _ in range(4):
-            if not gates:
-                a = random.choice(floor_cells)
-                gates.append(a)
-            else:
-                far = [cell for cell in floor_cells if manhattan(cell, gates[0]) >= self.size // 2 and cell not in gates]
-                next_gate = random.choice(far) if far else random.choice([c for c in floor_cells if c not in gates])
-                while next_gate in gates:
-                    next_gate = random.choice(floor_cells)
-                gates.append(next_gate)
-        
-        # Create interconnected tunnels: from any gate, randomly exit from one of the other 3
-        for gate in gates:
-            other_gates = [g for g in gates if g != gate]
-            self.tunnels[gate] = other_gates  # Store list of possible exits
-
-    def is_walkable(self, pos: Tuple[int, int]) -> bool:
-        x, y = pos
-        if x < 0 or y < 0 or x >= self.size or y >= self.size:
-            return False
-        return pos not in self.walls
-
-    def move_with_tunnel(self, pos: Tuple[int, int], direction: Direction) -> Tuple[int, int]:
-        if direction == Direction.NONE:
-            return pos
-
-        nxt = add_pos(pos, direction.value)
-        if not self.is_walkable(nxt):
-            return pos
-        if nxt in self.tunnels:
-            # If tunnel leads to multiple gates, pick one randomly
-            exit_gates = self.tunnels[nxt]
-            if isinstance(exit_gates, list):
-                return random.choice(exit_gates)
-            return exit_gates
-        return nxt
-
-    def draw(self, screen: pygame.Surface, offset_y: int, has_key: bool):
-        for x in range(self.size):
-            for y in range(self.size):
-                screen.blit(self.floor_tile, (x * CELL_SIZE, y * CELL_SIZE + offset_y))
-
-        for x, y in self.walls:
-            screen.blit(self.wall_tile, (x * CELL_SIZE, y * CELL_SIZE + offset_y))
-
-        ex, ey = self.exit_pos
-        color = (220, 50, 50) if has_key else COLOR_EXIT_LOCKED
-        x_pos = ex * CELL_SIZE + 12
-        y_pos = ey * CELL_SIZE + offset_y + 16
-        door_w = CELL_SIZE - 24
-        door_h = CELL_SIZE - 24
-        pygame.draw.rect(screen, color, (x_pos, y_pos, door_w, door_h))
-        pygame.draw.arc(screen, color, (x_pos, y_pos - door_h // 3, door_w, door_h), 3.14, 6.28, 3)
-
-        for t_in, _ in self.tunnels.items():
-            tx, ty = t_in
-            half = CELL_SIZE // 3
-            pygame.draw.rect(screen, COLOR_TUNNEL_GLOW, (tx * CELL_SIZE + CELL_SIZE // 2 - half, ty * CELL_SIZE + offset_y + CELL_SIZE // 2 - half, half * 2, half * 2))
-            half_inner = CELL_SIZE // 5
-            pygame.draw.rect(screen, COLOR_TUNNEL, (tx * CELL_SIZE + CELL_SIZE // 2 - half_inner, ty * CELL_SIZE + offset_y + CELL_SIZE // 2 - half_inner, half_inner * 2, half_inner * 2))
-
-        # Draw entry point marker
-        ex_x, ex_y = self.entry_pos
-        entry_radius = CELL_SIZE // 4
-        pygame.draw.circle(screen, (255, 200, 50), (ex_x * CELL_SIZE + CELL_SIZE // 2, ex_y * CELL_SIZE + offset_y + CELL_SIZE // 2), entry_radius, 3)
-        pygame.draw.circle(screen, (200, 160, 20), (ex_x * CELL_SIZE + CELL_SIZE // 2, ex_y * CELL_SIZE + offset_y + CELL_SIZE // 2), entry_radius // 2)
-
-
-def astar_next_step(
-    maze: Maze,
-    start: Tuple[int, int],
-    goal: Tuple[int, int],
-    blocked: Optional[Set[Tuple[int, int]]] = None,
-) -> Tuple[int, int]:
-    if start == goal:
-        return start
-
-    if blocked is None:
-        blocked = set()
-
-    frontier = [(0, start)]
-    came_from: Dict[Tuple[int, int], Optional[Tuple[int, int]]] = {start: None}
-    gscore = {start: 0}
-
-    while frontier:
-        _, current = heapq.heappop(frontier)
-        if current == goal:
-            break
-
-        for d in CARDINALS:
-            n = add_pos(current, d.value)
-            if not maze.is_walkable(n):
-                continue
-            if n in blocked and n != goal:
-                continue
-
-            if n in maze.tunnels:
-                exit_gates = maze.tunnels[n]
-                n = random.choice(exit_gates) if isinstance(exit_gates, list) else exit_gates
-
-            tentative = gscore[current] + 1
-            if tentative < gscore.get(n, 10**9):
-                gscore[n] = tentative
-                f = tentative + manhattan(n, goal)
-                heapq.heappush(frontier, (f, n))
-                came_from[n] = current
-
-    if goal not in came_from:
-        return start
-
-    cursor = goal
-    while came_from[cursor] != start and came_from[cursor] is not None:
-        cursor = came_from[cursor]
-    return cursor
-
-
-def astar_distance(
-    maze: Maze,
-    start: Tuple[int, int],
-    goal: Tuple[int, int],
-    blocked: Optional[Set[Tuple[int, int]]] = None,
-    use_tunnels: bool = True,
-) -> int:
-    if start == goal:
-        return 0
-
-    if blocked is None:
-        blocked = set()
-
-    frontier = [(0, start)]
-    gscore = {start: 0}
-
-    while frontier:
-        _, current = heapq.heappop(frontier)
-        if current == goal:
-            return gscore[current]
-
-        for d in CARDINALS:
-            n = add_pos(current, d.value)
-            if not maze.is_walkable(n):
-                continue
-            if n in blocked and n != goal:
-                continue
-
-            if use_tunnels and n in maze.tunnels:
-                exit_gates = maze.tunnels[n]
-                n = random.choice(exit_gates) if isinstance(exit_gates, list) else exit_gates
-
-            tentative = gscore[current] + 1
-            if tentative < gscore.get(n, 10**9):
-                gscore[n] = tentative
-                f = tentative + manhattan(n, goal)
-                heapq.heappush(frontier, (f, n))
-
-    return 999
-
-
-class MCTSNode:
-    def __init__(self, state: Snapshot, parent: Optional["MCTSNode"] = None, action=None):
-        self.state = state
-        self.parent = parent
-        self.action = action
-        self.children: List[MCTSNode] = []
-        self.visits = 0
-        self.value = 0.0
-        self.untried_actions: List = []
-
-    def uct_score(self, exploration: float = 1.41) -> float:
-        if self.visits == 0:
-            return float("inf")
-        exploit = self.value / self.visits
-        explore = exploration * math.sqrt(math.log(max(1, self.parent.visits)) / self.visits)
-        return exploit + explore
 
 
 class Game:
@@ -511,6 +120,7 @@ class Game:
         self.reset()
 
     def reset(self):
+        """Reset game to initial state."""
         self.maze = Maze(GRID_SIZE)
         self.last_action_tick = pygame.time.get_ticks()
 
@@ -522,7 +132,7 @@ class Game:
         ]
 
         self.eleven = AgentState(*random.choice(floor), Direction.SOUTH, hp=(NUM_DEMOGORGONS * 3 - 1))
-        self.maze.entry_pos = self.eleven.pos()  # Mark entry point at Eleven's spawn
+        self.maze.entry_pos = self.eleven.pos()
 
         self.demogorgons: List[AgentState] = []
         random.shuffle(floor)
@@ -542,18 +152,20 @@ class Game:
         self.game_start_time = pygame.time.get_ticks()
         self.turns_left = 0
         self.points = 0
-        self.last_shoot_time = self.game_start_time  # Initialize shoot cooldown
-        self.shoots_used = 0  # Track number of shoots (0 = first shoot has no cooldown)
+        self.last_shoot_time = self.game_start_time
+        self.shoots_used = 0
         self.game_over = False
         self.victory = False
         self.winner = ""
         self.show_message("AI vs AI started: Eleven must collect all coins, key, then escape")
 
     def show_message(self, text: str, ms: int = 1800):
+        """Display a temporary message."""
         self.message = text
         self.message_until = pygame.time.get_ticks() + ms
 
     def snapshot(self) -> Snapshot:
+        """Create a game state snapshot."""
         return Snapshot(
             eleven=AgentState(self.eleven.x, self.eleven.y, self.eleven.direction, self.eleven.hp),
             demogorgons=[AgentState(d.x, d.y, d.direction, d.hp) for d in self.demogorgons],
@@ -566,6 +178,7 @@ class Game:
         )
 
     def apply_snapshot(self, snap: Snapshot):
+        """Apply a snapshot to game state."""
         self.eleven = snap.eleven
         self.demogorgons = snap.demogorgons
         self.coins = set(snap.coins)
@@ -576,6 +189,7 @@ class Game:
         self.last_shoot_time = snap.last_shoot_time
 
     def is_terminal(self, snap: Snapshot) -> bool:
+        """Check if game state is terminal."""
         elapsed = pygame.time.get_ticks() - self.game_start_time
         if elapsed >= TIME_LIMIT_MS or snap.eleven.hp <= 0:
             return True
@@ -584,6 +198,7 @@ class Game:
         return False
 
     def reward(self, snap: Snapshot, initial_coins: int) -> float:
+        """Calculate reward for a state."""
         if snap.eleven.hp <= 0:
             return -100.0
         if snap.has_key and len(snap.coins) == 0 and (snap.eleven.x, snap.eleven.y) == self.maze.exit_pos:
@@ -592,29 +207,30 @@ class Game:
             return 100.0 + time_bonus * 0.3
 
         collected = initial_coins - len(snap.coins)
-        score = collected * 15.0  # Increased coin reward
+        score = collected * 15.0
         if snap.has_key:
-            score += 25.0  # Increased key reward
+            score += 25.0
 
         target = self.choose_goal_for_eleven(snap)
-        score -= manhattan((snap.eleven.x, snap.eleven.y), target) * 0.8  # Decreased distance penalty
+        score -= manhattan((snap.eleven.x, snap.eleven.y), target) * 0.8
 
         for d in snap.demogorgons:
             if d.hp <= 0:
                 continue
             dist = manhattan((d.x, d.y), (snap.eleven.x, snap.eleven.y))
             if dist <= 1:
-                score -= 35  # Increased danger from adjacent Demogorgon
+                score -= 35
             elif dist <= 3:
-                score -= (4 - dist) * 6  # Increased proximity penalty
+                score -= (4 - dist) * 6
             elif dist <= 5:
-                score -= (6 - dist) * 2  # Added medium-range avoidance
+                score -= (6 - dist) * 2
 
         elapsed = pygame.time.get_ticks() - self.game_start_time
-        score -= (elapsed / 1000.0) * 0.1  # Reduced time penalty
+        score -= (elapsed / 1000.0) * 0.1
         return score
 
     def choose_goal_for_eleven(self, snap: Snapshot) -> Tuple[int, int]:
+        """Choose the next objective for Eleven."""
         if snap.coins:
             return min(snap.coins, key=lambda c: manhattan((snap.eleven.x, snap.eleven.y), c))
         if not snap.has_key:
@@ -622,6 +238,7 @@ class Game:
         return self.maze.exit_pos
 
     def is_face_to_face(self, e: AgentState, d: AgentState) -> bool:
+        """Check if Eleven and Demogorgon face each other."""
         if manhattan((e.x, e.y), (d.x, d.y)) != 1:
             return False
         e_to_d = direction_between((e.x, e.y), (d.x, d.y))
@@ -629,12 +246,14 @@ class Game:
         return e.direction == e_to_d and d.direction == d_to_e
 
     def is_backstab(self, attacker: AgentState, target: AgentState) -> bool:
+        """Check if attack is from behind (backstab)."""
         if manhattan((attacker.x, attacker.y), (target.x, target.y)) != 1:
             return False
         target_to_attacker = direction_between((target.x, target.y), (attacker.x, attacker.y))
         return target_to_attacker == OPPOSITE[target.direction]
 
     def valid_eleven_actions(self, snap: Snapshot) -> List[Tuple[str, object]]:
+        """Get valid actions for Eleven."""
         acts: List[Tuple[str, object]] = [("wait", None)]
 
         for d in CARDINALS:
@@ -652,6 +271,7 @@ class Game:
         return acts
 
     def apply_eleven_action(self, snap: Snapshot, action: Tuple[str, object]):
+        """Apply Eleven's action to snapshot."""
         kind, value = action
         if kind == "move":
             direction: Direction = value
@@ -677,6 +297,8 @@ class Game:
             snap.has_key = True
 
     def rollout_eleven_action(self, snap: Snapshot) -> Tuple[str, object]:
+        """Select action during rollout using simple heuristics."""
+        import random
         actions = self.valid_eleven_actions(snap)
         weighted = []
         target = self.choose_goal_for_eleven(snap)
@@ -703,10 +325,12 @@ class Game:
         return random.choice([a for _, a in top])
 
     def predicted_eleven_step(self, snap: Snapshot):
+        """Predict Eleven's next step."""
         action = self.rollout_eleven_action(snap)
         self.apply_eleven_action(snap, action)
 
     def valid_demo_actions(self, snap: Snapshot, idx: int) -> List[Direction]:
+        """Get valid actions for a Demogorgon."""
         d = snap.demogorgons[idx]
         if d.hp <= 0:
             return [Direction.NONE]
@@ -715,22 +339,23 @@ class Game:
 
         actions = [Direction.NONE]
         for move in CARDINALS:
-            n = self.maze.move_with_tunnel((d.x, d.y), move)
-            if n != (d.x, d.y) and n not in occupied:
+            n = add_pos((d.x, d.y), move.value)
+            if self.maze.is_walkable(n):
                 actions.append(move)
         return actions
 
     def apply_demo_action(self, snap: Snapshot, idx: int, move: Direction):
+        """Apply Demogorgon action (no tunnels for Demogorgons)."""
         d = snap.demogorgons[idx]
         if d.hp <= 0:
             return
-        # Demogorgons cannot use tunnels - only regular movement
         nxt = add_pos((d.x, d.y), move.value)
         if self.maze.is_walkable(nxt):
             d.x, d.y = nxt
             d.direction = move
 
     def demo_eval(self, snap: Snapshot, idx: int) -> float:
+        """Evaluate state for a Demogorgon."""
         d = snap.demogorgons[idx]
         if d.hp <= 0:
             return -999.0
@@ -767,49 +392,13 @@ class Game:
 
         return score
 
-    def minimax_demo(self, snap: Snapshot, idx: int, depth: int, alpha: float, beta: float, maximizing: bool) -> float:
-        if depth == 0 or self.is_terminal(snap):
-            return self.demo_eval(snap, idx)
-
-        if maximizing:
-            best = -10**9
-            for action in self.valid_demo_actions(snap, idx):
-                nxt = snap.clone()
-                self.apply_demo_action(nxt, idx, action)
-                val = self.minimax_demo(nxt, idx, depth - 1, alpha, beta, False)
-                best = max(best, val)
-                alpha = max(alpha, best)
-                if beta <= alpha:
-                    break
-            return best
-
-        nxt = snap.clone()
-        self.predicted_eleven_step(nxt)
-        return self.minimax_demo(nxt, idx, depth - 1, alpha, beta, True)
-
-    def best_demo_move(self, snap: Snapshot, idx: int, depth: int = 3) -> Direction:
-        best_action = Direction.NONE
-        best_val = -10**9
-        alpha = -10**9
-        beta = 10**9
-
-        for action in self.valid_demo_actions(snap, idx):
-            nxt = snap.clone()
-            self.apply_demo_action(nxt, idx, action)
-            val = self.minimax_demo(nxt, idx, depth - 1, alpha, beta, False)
-            if val > best_val:
-                best_val = val
-                best_action = action
-            alpha = max(alpha, best_val)
-
-        return best_action
-
     def apply_demogorgon_turn(self, snap: Snapshot):
+        """Apply actions for all Demogorgons."""
         for idx, d in enumerate(snap.demogorgons):
             if d.hp <= 0:
                 continue
 
-            move = self.best_demo_move(snap, idx, depth=3)
+            move = best_demo_move(self, snap, idx, depth=3)
             self.apply_demo_action(snap, idx, move)
 
             e = snap.eleven
@@ -822,68 +411,16 @@ class Game:
                 elif not self.is_backstab(e, d):
                     e.hp -= 1
 
-    def mcts_action(self, root_state: Snapshot, iterations: int = 120, rollout_depth: int = 10) -> Tuple[str, object]:
-        root = MCTSNode(root_state.clone())
-        root.untried_actions = self.valid_eleven_actions(root.state)
-        initial_coins = len(root_state.coins)
-
-        for _ in range(iterations):
-            node = root
-            state = root_state.clone()
-
-            while not node.untried_actions and node.children:
-                node = max(node.children, key=lambda c: c.uct_score())
-                self.apply_eleven_action(state, node.action)
-                self.apply_demogorgon_turn(state)
-                state.turns_left -= 1
-
-            if node.untried_actions:
-                action = random.choice(node.untried_actions)
-                node.untried_actions.remove(action)
-                self.apply_eleven_action(state, action)
-                self.apply_demogorgon_turn(state)
-                state.turns_left -= 1
-
-                child = MCTSNode(state.clone(), parent=node, action=action)
-                child.untried_actions = self.valid_eleven_actions(child.state)
-                node.children.append(child)
-                node = child
-
-            rollout_state = state.clone()
-            depth = rollout_depth
-            while depth > 0 and not self.is_terminal(rollout_state):
-                action = self.rollout_eleven_action(rollout_state)
-                self.apply_eleven_action(rollout_state, action)
-                self.apply_demogorgon_turn(rollout_state)
-                rollout_state.turns_left -= 1
-                depth -= 1
-
-            r = self.reward(rollout_state, initial_coins)
-
-            while node is not None:
-                node.visits += 1
-                node.value += r
-                node = node.parent
-
-        if not root.children:
-            acts = self.valid_eleven_actions(root_state)
-            return random.choice(acts)
-
-        best = max(root.children, key=lambda c: c.visits)
-        return best.action
-
     def run_round(self):
-        """Execute continuous actions for both Eleven and Demogorgons simultaneously."""
+        """Execute one game round with both agents."""
         if self.game_over:
             return
 
         snap = self.snapshot()
 
-        # Eleven uses MCTS to decide action
-        action = self.mcts_action(snap, iterations=250, rollout_depth=12)
+        action = mcts_action(self, snap, iterations=250, rollout_depth=12)
         self.apply_eleven_action(snap, action)
 
-        # Demogorgons use Minimax to hunt
         self.apply_demogorgon_turn(snap)
         snap.turns_left -= 1
 
@@ -892,46 +429,39 @@ class Game:
         self.post_turn_updates()
 
     def resolve_encounter_skills(self):
-        """Resolve skill encounters between Eleven and adjacent Demogorgons.
-        Eleven tries to shoot first. First shoot = no cooldown, 2nd+ = must wait 2 min.
-        If Eleven can shoot, she kills the Demogorgon. Otherwise, she gets eaten."""
-        
+        """Resolve encounters between Eleven and adjacent Demogorgons."""
+        import random
         now = pygame.time.get_ticks()
-        
+
         for d in self.demogorgons:
             if d.hp <= 0:
                 continue
-            
-            # Check if adjacent
+
             if manhattan(self.eleven.pos(), d.pos()) != 1:
                 continue
-            
-            # Encounter detected - check if Eleven can shoot
+
             can_shoot = False
-            
+
             if self.shoots_used == 0:
-                # First shoot: no cooldown needed
                 can_shoot = True
             elif self.shoots_used >= 1:
-                # Subsequent shoots: must wait 2 minutes from last shot
                 time_since_last_shoot = now - self.last_shoot_time
                 can_shoot = time_since_last_shoot >= SHOOT_COOLDOWN_MS
-            
+
             if can_shoot and self.shoots_used < MAX_SHOOTS:
-                # Eleven shoots and kills the Demogorgon
                 d.hp = 0
                 self.shoots_used += 1
                 self.last_shoot_time = now
                 shots_remaining = MAX_SHOOTS - self.shoots_used
                 self.show_message(f"Eleven shot! Demogorgon defeated! ({shots_remaining} shots left)")
-                return  # Only one encounter per turn
+                return
             else:
-                # Demogorgon eats Eleven - game over
                 self.eleven.hp = 0
                 self.show_message("Demogorgon caught and ate Eleven!")
-                return  # Only one encounter per turn
+                return
 
     def post_turn_updates(self):
+        """Update game state after each turn."""
         if self.eleven.hp <= 0:
             self.game_over = True
             self.victory = False
@@ -944,7 +474,7 @@ class Game:
             self.game_over = True
             self.victory = False
             self.winner = "Demogorgon"
-            self.points += 0  # Time limit reached, no bonus
+            self.points += 0
             self.show_message("Time is over", 3000)
             return
 
@@ -952,18 +482,18 @@ class Game:
             self.game_over = True
             self.victory = True
             self.winner = "Eleven"
-            self.points += 50  # Escape bonus
+            self.points += 50
             self.show_message("Eleven escaped the Upside Down!", 3200)
             return
 
         if not self.has_key and self.eleven.pos() == self.key_pos:
             self.has_key = True
-            self.points += 20  # Key bonus
+            self.points += 20
             self.show_message("Eleven picked up the key")
 
         if self.eleven.pos() in self.coins:
             self.coins.remove(self.eleven.pos())
-            self.points += 10  # Coin bonus
+            self.points += 10
             self.show_message(f"Coin collected ({TOTAL_COINS - len(self.coins)}/{TOTAL_COINS})")
 
         alive = [d for d in self.demogorgons if d.hp > 0]
@@ -971,10 +501,11 @@ class Game:
             self.game_over = True
             self.victory = True
             self.winner = "Eleven"
-            self.points += 100  # Victory bonus for defeating all Demogorgons
+            self.points += 100
             self.show_message("All Demogorgons defeated", 3200)
 
     def update_encounter_audio(self):
+        """Update encounter sound effects."""
         encounter_now = False
         for d in self.demogorgons:
             if d.hp <= 0:
@@ -993,6 +524,7 @@ class Game:
                 self.encounter_channel.stop()
 
     def draw_detection(self):
+        """Draw detection radius for Demogorgons."""
         for d in self.demogorgons:
             if d.hp <= 0:
                 continue
@@ -1005,6 +537,7 @@ class Game:
             self.screen.blit(surf, (cx - radius, cy - radius))
 
     def draw_entities(self):
+        """Draw game entities."""
         for d in self.demogorgons:
             if d.hp <= 0:
                 continue
@@ -1015,6 +548,7 @@ class Game:
         self.screen.blit(self.eleven_sprite, (self.eleven.x * CELL_SIZE, self.eleven.y * CELL_SIZE + HUD_HEIGHT))
 
     def draw_items(self):
+        """Draw coins and key."""
         for c in self.coins:
             cx = c[0] * CELL_SIZE + CELL_SIZE // 2
             cy = c[1] * CELL_SIZE + HUD_HEIGHT + CELL_SIZE // 2
@@ -1028,10 +562,10 @@ class Game:
             pygame.draw.rect(self.screen, COLOR_KEY, (kx + 3, ky - 2, 12, 4), border_radius=2)
 
     def draw_hud(self):
+        """Draw heads-up display."""
         pygame.draw.rect(self.screen, COLOR_HUD, (0, 0, SCREEN_WIDTH, HUD_HEIGHT))
         pygame.draw.line(self.screen, (120, 95, 130), (0, HUD_HEIGHT - 2), (SCREEN_WIDTH, HUD_HEIGHT - 2), 2)
 
-        # Calculate remaining time
         now = pygame.time.get_ticks()
         elapsed = now - self.game_start_time
         remaining_ms = max(0, TIME_LIMIT_MS - elapsed)
@@ -1039,10 +573,6 @@ class Game:
         seconds = (remaining_ms % 60000) // 1000
         time_str = f"{minutes}:{seconds:02d}"
 
-        # Calculate shoot cooldown status
-        now = pygame.time.get_ticks()
-        
-        # First shoot always ready, subsequent shoots need cooldown
         if self.shoots_used == 0:
             can_shoot_now = True
         elif self.shoots_used >= 1:
@@ -1050,9 +580,7 @@ class Game:
             can_shoot_now = time_since_shoot >= SHOOT_COOLDOWN_MS
         else:
             can_shoot_now = False
-        
-        shoots_left = MAX_SHOOTS - self.shoots_used
-        
+
         if can_shoot_now and self.shoots_used < MAX_SHOOTS:
             shoot_str = f"Shoot: READY ({self.shoots_used + 1}/{MAX_SHOOTS})"
             shoot_color = (100, 255, 100)
@@ -1062,7 +590,7 @@ class Game:
         else:
             time_since_shoot = now - self.last_shoot_time
             cooldown_remaining_ms = SHOOT_COOLDOWN_MS - time_since_shoot
-            cooldown_sec = (cooldown_remaining_ms + 999) // 1000  # Round up
+            cooldown_sec = (cooldown_remaining_ms + 999) // 1000
             shoot_str = f"Shoot: {cooldown_sec}s ({self.shoots_used + 1}/{MAX_SHOOTS})"
             shoot_color = (255, 200, 70)
 
@@ -1080,7 +608,6 @@ class Game:
             self.screen.blit(s, (x, 10))
             x += s.get_width() + 18
 
-        # Draw shoot status
         shoot_surf = self.font.render(shoot_str, True, shoot_color)
         self.screen.blit(shoot_surf, (15, 44))
 
@@ -1093,32 +620,34 @@ class Game:
             rect = m.get_rect(center=(SCREEN_WIDTH // 2, 68))
             self.screen.blit(m, rect)
 
+        esc_hint = pygame.font.Font(None, 24).render("ESC-Quit", True, (150, 150, 150))
+        self.screen.blit(esc_hint, (15, HUD_HEIGHT - 25))
+
     def draw_game_over(self):
+        """Draw game over screen."""
         if not self.game_over:
             return
         overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 170))
         self.screen.blit(overlay, (0, 0))
 
-        # Winner text
         winner_text = f"WINNER: {self.winner}" if self.winner else "GAME OVER"
         color = COLOR_EXIT if self.victory else (220, 90, 90)
         s = pygame.font.Font(None, 64).render(winner_text, True, color)
         self.screen.blit(s, s.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 40)))
 
-        # Points display
         points_text = f"Points: {self.points}"
         ps = self.font.render(points_text, True, COLOR_TEXT)
         self.screen.blit(ps, ps.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)))
 
-        # Control labels
-        hint = self.font.render("R - Restart | Q - Quit | ESC - Quit", True, COLOR_TEXT)
+        hint = self.font.render("R - Restart | Q - Quit", True, COLOR_TEXT)
         self.screen.blit(hint, hint.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 50)))
 
     def draw(self):
+        """Draw the current game state."""
         self.screen.fill(COLOR_BG)
         self.draw_hud()
-        self.maze.draw(self.screen, HUD_HEIGHT, self.has_key)
+        self.maze.draw(self.screen, HUD_HEIGHT, self.has_key, HUD_HEIGHT)
         self.draw_detection()
         self.draw_items()
         self.draw_entities()
@@ -1127,21 +656,22 @@ class Game:
         pygame.display.flip()
 
     def update_window_title(self):
-        """Update window title with game stats: Timer | Score | Coins | Key"""
+        """Update window title with game stats."""
         now = pygame.time.get_ticks()
         elapsed = now - self.game_start_time
         remaining_ms = max(0, TIME_LIMIT_MS - elapsed)
         minutes = remaining_ms // 60000
         seconds = (remaining_ms % 60000) // 1000
         time_str = f"{minutes}:{seconds:02d}"
-        
+
         coins_collected = TOTAL_COINS - len(self.coins)
         key_str = "✓" if self.has_key else "✗"
-        
+
         title = f"Upside Down | Time: {time_str} | Score: {self.points} | Coins: {coins_collected}/{TOTAL_COINS} | Key: {key_str}"
         pygame.display.set_caption(title)
 
     def update(self):
+        """Update game state."""
         now = pygame.time.get_ticks()
         self.update_encounter_audio()
 
@@ -1150,6 +680,7 @@ class Game:
             self.run_round()
 
     def run(self):
+        """Main game loop."""
         while self.running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -1169,10 +700,5 @@ class Game:
         pygame.quit()
 
 
-def main():
-    game = Game()
-    game.run()
-
-
-if __name__ == "__main__":
-    main()
+# Import random here to avoid circular imports
+import random

@@ -7,13 +7,16 @@ Control Eleven as she attempts to escape a maze filled with Demogorgons using in
 
 ## 🚀 Features
 
-* 🧠 **MCTS (Monte Carlo Tree Search)** for Eleven's movement
-* 🤖 **Minimax Algorithm** for Demogorgon AI behavior
-* 🧱 Dynamic **maze environment** with walls and exits
-* ⚔️ **Combat system** with directional mechanics (backstab vs frontal attack)
-* 🌫️ **Detection system** with enemy radius visualization
-* 🎨 Procedurally generated sprites (no external assets required)
-* 🕹️ Fully automated gameplay (AI vs AI)
+* 🧠 **MCTS with UCT** for Eleven's movement (selection, expansion, rollout, backprop)
+* 🤖 **Minimax + Alpha-Beta Pruning** for Demogorgon AI behavior
+* 🧱 **12x12 random DFS maze generation** each run (rooms, corridors, loops)
+* 🚪 One locked exit, **gold coin + key objective**, and fixed turn time limit
+* 🌀 **Tunnel shortcuts** for fast escapes and interceptions
+* ⚔️ **Directional combat** (backstab vs frontal encounters)
+* 🌫️ **Detection radius visualization** for Demogorgons
+* 🎨 Procedurally generated sprites and tiles (no external assets)
+* 🔊 Procedural creepy **encounter ambient sound**
+* 🕹️ Fully automated **AI vs AI** turn-based gameplay
 
 ---
 
@@ -81,21 +84,24 @@ Control Eleven as she attempts to escape a maze filled with Demogorgons using in
 
 ---
 
-## 🧱 Project Structure (Recommended)
+## 🧱 Project Structure
+
+The project is organized into modular components for maintainability and clarity:
 
 ```
-upsidedownchase/
-│
-├── main.py
-├── game.py
-├── entities.py
-├── maze.py
+upside-down-chase/
+├── main.py              # Entry point - initializes game and runs main loop
+├── game.py              # Core game logic, rendering, and game state management
+├── entities.py          # Data structures (Direction, AgentState, Snapshot) and utilities
+├── maze.py              # Procedural maze generation and A* pathfinding algorithms
 ├── ai/
-│   ├── mcts.py
-│   └── minimax.py
-├── assets/ (optional)
-├── README.md
-└── .gitignore
+│   ├── mcts.py          # Monte Carlo Tree Search implementation
+│   ├── minimax.py       # Minimax with alpha-beta pruning
+│   └── __init__.py
+├── README.md            # This file
+├── .gitignore           # Git ignore rules
+├── .venv/               # Python virtual environment
+└── .git/                # Version control
 ```
 
 ---
@@ -131,9 +137,11 @@ python main.py
 
 | Key | Action                    |
 | --- | ------------------------- |
-| ESC | Quit game                 |
+| ESC | Quit game (anytime)       |
 | R   | Restart (after game over) |
 | Q   | Quit (after game over)    |
+
+**Note:** ESC-Quit is displayed in the HUD bottom-left corner during gameplay for quick reference.
 
 ---
 
@@ -163,7 +171,8 @@ You can tweak gameplay via constants in the code:
 
 **Mahhia**
 CSE Undergraduate Student
-
+**Shaila**
+CSE Undergraduate Student
 ---
 
 ## 📜 License
