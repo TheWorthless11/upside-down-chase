@@ -21,43 +21,97 @@ COLOR_TUNNEL = (70, 150, 200)
 COLOR_TUNNEL_GLOW = (95, 210, 255)
 
 
-def generate_floor_tile(size: int = CELL_SIZE) -> pygame.Surface:
-    s = pygame.Surface((size, size))
-    s.fill(COLOR_FLOOR)
-    for _ in range(10):
-        x = random.randint(0, size - 8)
-        y = random.randint(0, size - 8)
-        w = random.randint(6, 18)
-        h = random.randint(6, 18)
-        shift = random.randint(-9, 9)
-        c = (
-            max(0, min(255, COLOR_FLOOR[0] + shift)),
-            max(0, min(255, COLOR_FLOOR[1] + shift)),
-            max(0, min(255, COLOR_FLOOR[2] + shift)),
-        )
-        pygame.draw.rect(s, c, (x, y, w, h))
-    return s
+# ---------------------------------------------------------
+# NEW PROCEDURAL BACKGROUND GENERATOR (NO IMAGES NEEDED)
+# ---------------------------------------------------------
 
 
-def generate_wall_tile(size: int = CELL_SIZE) -> pygame.Surface:
-    s = pygame.Surface((size, size))
-    s.fill(COLOR_WALL)
-    for row in range(4):
-        offset = (row % 2) * (size // 4)
-        for col in range(3):
-            x = col * (size // 2) + offset - size // 4
-            y = row * (size // 4)
-            pygame.draw.rect(s, (95, 88, 105), (x + 2, y + 2, size // 2 - 4, size // 4 - 4))
-    return s
+def generate_floor_tile(size: int = 50) -> pygame.Surface:
+    """Draws a stone floor with creepy dark vines crawling over it."""
+    # 1. Create a blank canvas for our floor tile
+    surface = pygame.Surface((size, size))
+    
+    # 2. Fill it with a dark, greenish-grey stone color
+    base_color = (65, 70, 65)
+    surface.fill(base_color)
+    
+    # 3. Draw a grid of smaller stones inside this tile to match your picture
+    stone_size = size // 3
+    for x in range(0, size, stone_size):
+        for y in range(0, size, stone_size):
+            # Draw the square stone
+            stone_rect = (x, y, stone_size, stone_size)
+            pygame.draw.rect(surface, (75, 80, 75), stone_rect)
+            # Draw a dark outline around the stone to make it look like cracks
+            pygame.draw.rect(surface, (40, 45, 40), stone_rect, 2)
+            
+    # 4. Draw creepy Upside Down vines (dark curvy lines)
+    # We will draw 2 to 4 random vines per tile
+    num_vines = random.randint(2, 4)
+    for _ in range(num_vines):
+        # Pick a random starting point and ending point for the vine
+        start_x, start_y = random.randint(0, size), random.randint(0, size)
+        end_x, end_y = random.randint(0, size), random.randint(0, size)
+        
+        # Pick a random middle point so the vine curves and looks organic
+        mid_x = (start_x + end_x) // 2 + random.randint(-15, 15)
+        mid_y = (start_y + end_y) // 2 + random.randint(-15, 15)
+        
+        # Draw the dark, thick vine
+        vine_color = (30, 20, 25) # Very dark purplish-black
+        pygame.draw.line(surface, vine_color, (start_x, start_y), (mid_x, mid_y), 3)
+        pygame.draw.line(surface, vine_color, (mid_x, mid_y), (end_x, end_y), 3)
 
+    return surface
+
+
+def generate_wall_tile(size: int = 50) -> pygame.Surface:
+    """Draws a wall that looks raised and 3D using light and shadow tricks."""
+    surface = pygame.Surface((size, size))
+    
+    # 1. Base color of the wall (Grey)
+    wall_color = (90, 95, 100)
+    surface.fill(wall_color)
+    
+    # 2. Fake 3D Effect (Beveling)
+    # We draw a bright line on the top and left (where the light hits)
+    # We draw a dark line on the bottom and right (where the shadow falls)
+    light_color = (130, 135, 140)
+    shadow_color = (40, 45, 50)
+    
+    # Top edge (Light)
+    pygame.draw.rect(surface, light_color, (0, 0, size, 4))
+    # Left edge (Light)
+    pygame.draw.rect(surface, light_color, (0, 0, 4, size))
+    # Bottom edge (Shadow)
+    pygame.draw.rect(surface, shadow_color, (0, size - 4, size, 4))
+    # Right edge (Shadow)
+    pygame.draw.rect(surface, shadow_color, (size - 4, 0, 4, size))
+    
+    # 3. Add a glowing light to a few random walls (like in your picture!)
+    # There is a 1-in-10 chance a wall will have a glowing yellow light
+    if random.randint(1, 10) == 1:
+        # Draw the metal light fixture
+        fixture_rect = (size // 4, size // 4, size // 2, 8)
+        pygame.draw.rect(surface, (50, 40, 20), fixture_rect)
+        
+        # Draw the bright orange/yellow glow
+        glow_rect = (size // 4 + 2, size // 4 + 2, size // 2 - 4, 4)
+        pygame.draw.rect(surface, (255, 180, 50), glow_rect)
+
+    return surface
 
 class Maze:
     def __init__(self, size: int = GRID_SIZE):
         self.size = size
         self.walls: Set[Tuple[int, int]] = set()
+        # Support multiple exit doors
+        self.exit_positions: Set[Tuple[int, int]] = set()
+        # Backwards-compatible single exit property (first exit)
         self.exit_pos: Tuple[int, int] = (size - 1, size // 2)
         self.entry_pos: Tuple[int, int] = (0, 0)
         self.tunnels: Dict[Tuple[int, int], Tuple[int, int]] = {}
+        self.unlocked_exits: Set[Tuple[int, int]] = set()
 
         self.floor_tile = generate_floor_tile()
         self.wall_tile = generate_wall_tile()
@@ -129,8 +183,18 @@ class Maze:
             if (ix, iy) not in self.walls:
                 candidates.append((ex, ey))
 
-        self.exit_pos = random.choice(candidates) if candidates else (self.size - 1, self.size // 2)
-        self.walls.discard(self.exit_pos)
+        # Choose multiple exits (2-4) if possible
+        num_exits = min(len(candidates), random.randint(2, 4)) if candidates else 1
+        chosen = random.sample(candidates, num_exits) if candidates else [(self.size - 1, self.size // 2)]
+        self.exit_positions = set(chosen)
+        # Keep a single convenience attribute for compatibility
+        self.exit_pos = next(iter(self.exit_positions))
+        for e in self.exit_positions:
+            self.walls.discard(e)
+
+    def is_exit(self, x: int, y: int) -> bool:
+        """Return True if (x,y) is one of the exit doors."""
+        return (x, y) in self.exit_positions
 
     def _generate_tunnels(self):
         """Generate 4 interconnected tunnel gates with random exit points."""
@@ -187,14 +251,15 @@ class Maze:
         for x, y in self.walls:
             screen.blit(self.wall_tile, (x * CELL_SIZE, y * CELL_SIZE + offset_y))
 
-        ex, ey = self.exit_pos
-        color = (220, 50, 50) if has_key else COLOR_EXIT_LOCKED
-        x_pos = ex * CELL_SIZE + 12
-        y_pos = ey * CELL_SIZE + offset_y + 16
-        door_w = CELL_SIZE - 24
-        door_h = CELL_SIZE - 24
-        pygame.draw.rect(screen, color, (x_pos, y_pos, door_w, door_h))
-        pygame.draw.arc(screen, color, (x_pos, y_pos - door_h // 3, door_w, door_h), 3.14, 6.28, 3)
+        # Draw all exit doors
+        for ex, ey in self.exit_positions:
+            color = COLOR_EXIT if (ex, ey) in getattr(self, "unlocked_exits", set()) else COLOR_EXIT_LOCKED
+            x_pos = ex * CELL_SIZE + 12
+            y_pos = ey * CELL_SIZE + offset_y + 16
+            door_w = CELL_SIZE - 24
+            door_h = CELL_SIZE - 24
+            pygame.draw.rect(screen, color, (x_pos, y_pos, door_w, door_h))
+            pygame.draw.arc(screen, color, (x_pos, y_pos - door_h // 3, door_w, door_h), 3.14, 6.28, 3)
 
         for t_in, _ in self.tunnels.items():
             tx, ty = t_in

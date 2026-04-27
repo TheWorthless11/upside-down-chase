@@ -70,6 +70,7 @@ class Snapshot:
     key_pos: Tuple[int, int]
     has_key: bool
     turns_left: int
+    unlocked_exits: Set[Tuple[int, int]] = None
     points: int = 0
     last_shoot_time: int = 0
 
@@ -80,6 +81,7 @@ class Snapshot:
             coins=set(self.coins),
             key_pos=self.key_pos,
             has_key=self.has_key,
+            unlocked_exits=set(self.unlocked_exits) if self.unlocked_exits is not None else set(),
             turns_left=self.turns_left,
             points=self.points,
             last_shoot_time=self.last_shoot_time,
