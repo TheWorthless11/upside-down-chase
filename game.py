@@ -690,7 +690,14 @@ class Game:
             pygame.draw.rect(self.screen, COLOR_KEY, (kx + 3, ky - 2, 12, 4), border_radius=2)
 
     def draw_hud(self):
-        """Draw heads-up display."""
+        """Draw heads-up display.
+
+        Layout (3 rows, no overlapping):
+          Row 1 (y=6):   HP | Coins | Key | Time        (top stats)
+          Row 2 (y=34):  Shoot status (left)  Demogorgons (right)
+          Row 3 (y=62):  ESC-Quit (left)  Message (center)  Points (right)
+        """
+        # --- Background bar ---
         pygame.draw.rect(self.screen, COLOR_HUD, (0, 0, SCREEN_WIDTH, HUD_HEIGHT))
         pygame.draw.line(self.screen, (120, 95, 130), (0, HUD_HEIGHT - 2), (SCREEN_WIDTH, HUD_HEIGHT - 2), 2)
 
@@ -701,6 +708,30 @@ class Game:
         seconds = (remaining_ms % 60000) // 1000
         time_str = f"{minutes}:{seconds:02d}"
 
+        # --- Row 1: core stats spread across the width ---
+        row1_y = 6
+        # Key status with colour
+        if self.has_key:
+            key_str = "Key: YES"
+            key_color = (255, 215, 0)
+        else:
+            key_str = "Key: NO"
+            key_color = (150, 150, 150)
+
+        row1_items = [
+            (f"HP:{self.eleven.hp}", COLOR_TEXT),
+            (f"Coins:{TOTAL_COINS - len(self.coins)}/{TOTAL_COINS}", COLOR_TEXT),
+            (key_str, key_color),
+            (f"Time:{time_str}", COLOR_TEXT),
+        ]
+        # Evenly space items across the screen width
+        slot_w = SCREEN_WIDTH // len(row1_items)
+        for i, (txt, col) in enumerate(row1_items):
+            surf = self.small_font.render(txt, True, col)
+            self.screen.blit(surf, (i * slot_w + 8, row1_y))
+
+        # --- Row 2: shoot status (left) + demogorgon count (right) ---
+        row2_y = 32
         if self.shoots_used == 0:
             can_shoot_now = True
         elif self.shoots_used >= 1:
@@ -722,48 +753,26 @@ class Game:
             shoot_str = f"Shoot: {cooldown_sec}s ({self.shoots_used + 1}/{MAX_SHOOTS})"
             shoot_color = (255, 200, 70)
 
-        lines = [
-            f"HP: {self.eleven.hp}",
-            f"Points: {self.points}",
-            f"Coins: {TOTAL_COINS - len(self.coins)}/{TOTAL_COINS}",
-            f"Key: {'✓' if self.has_key else '✗'}",
-            f"Time: {time_str}",
-        ]
-
-        x = 15
-        for txt in lines:
-            s = self.font.render(txt, True, COLOR_TEXT)
-            self.screen.blit(s, (x, 10))
-            x += s.get_width() + 18
-
-        shoot_surf = self.font.render(shoot_str, True, shoot_color)
-        self.screen.blit(shoot_surf, (15, 44))
+        shoot_surf = self.small_font.render(shoot_str, True, shoot_color)
+        self.screen.blit(shoot_surf, (8, row2_y))
 
         alive = sum(1 for d in self.demogorgons if d.hp > 0)
-        right = self.font.render(f"Demogorgons: {alive}/{len(self.demogorgons)}", True, (230, 170, 180))
-        self.screen.blit(right, (SCREEN_WIDTH - right.get_width() - 15, 44))
+        demo_surf = self.small_font.render(f"Demogorgons:{alive}/{len(self.demogorgons)}", True, (230, 170, 180))
+        self.screen.blit(demo_surf, (SCREEN_WIDTH - demo_surf.get_width() - 8, row2_y))
 
-        if self.message and pygame.time.get_ticks() < self.message_until:
-            m = self.small_font.render(self.message, True, (255, 205, 110))
-            rect = m.get_rect(center=(SCREEN_WIDTH // 2, 68))
-            self.screen.blit(m, rect)
+        # Points in the middle of row 2
+        pts_surf = self.small_font.render(f"Pts:{self.points}", True, COLOR_TEXT)
+        self.screen.blit(pts_surf, (SCREEN_WIDTH // 2 - pts_surf.get_width() // 2, row2_y))
 
-        esc_hint = pygame.font.Font(None, 24).render("ESC-Quit", True, (150, 150, 150))
-        self.screen.blit(esc_hint, (15, HUD_HEIGHT - 25))
-        
-        # ---------------------------------------------------------
-        # NEW CODE: KEY TEXT IN MENU
-        # ---------------------------------------------------------
-        if self.has_key:
-            key_text = "Key: FOUND!"
-            key_color = (255, 215, 0) # Shiny Gold Color
-        else:
-            key_text = "Key: MISSING"
-            key_color = (150, 150, 150) # Boring Grey Color
-            
-        # Draw the text right in the top middle of the screen!
-        key_surface = self.font.render(key_text, True, key_color)
-        self.screen.blit(key_surface, (SCREEN_WIDTH // 2 - 80, 15))
+        # --- Row 3: ESC hint (left) + temporary message (center) ---
+        row3_y = 56
+        esc_surf = self.small_font.render("ESC-Quit  R-Restart", True, (120, 120, 120))
+        self.screen.blit(esc_surf, (8, row3_y))
+
+        if self.message and now < self.message_until:
+            msg_surf = self.small_font.render(self.message, True, (255, 205, 110))
+            msg_rect = msg_surf.get_rect(center=(SCREEN_WIDTH // 2, row3_y + 10))
+            self.screen.blit(msg_surf, msg_rect)
 
     def draw_game_over(self):
         """Draw game over screen."""

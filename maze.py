@@ -263,10 +263,19 @@ class Maze:
 
         for t_in, _ in self.tunnels.items():
             tx, ty = t_in
-            half = CELL_SIZE // 3
-            pygame.draw.rect(screen, COLOR_TUNNEL_GLOW, (tx * CELL_SIZE + CELL_SIZE // 2 - half, ty * CELL_SIZE + offset_y + CELL_SIZE // 2 - half, half * 2, half * 2))
-            half_inner = CELL_SIZE // 5
-            pygame.draw.rect(screen, COLOR_TUNNEL, (tx * CELL_SIZE + CELL_SIZE // 2 - half_inner, ty * CELL_SIZE + offset_y + CELL_SIZE // 2 - half_inner, half_inner * 2, half_inner * 2))
+            # Draw tunnel portals as small diamond shapes instead of big boxes
+            cx = tx * CELL_SIZE + CELL_SIZE // 2
+            cy = ty * CELL_SIZE + offset_y + CELL_SIZE // 2
+            # Outer glow diamond
+            r = CELL_SIZE // 4
+            pygame.draw.polygon(screen, COLOR_TUNNEL_GLOW, [
+                (cx, cy - r), (cx + r, cy), (cx, cy + r), (cx - r, cy)
+            ])
+            # Inner solid diamond
+            ri = CELL_SIZE // 6
+            pygame.draw.polygon(screen, COLOR_TUNNEL, [
+                (cx, cy - ri), (cx + ri, cy), (cx, cy + ri), (cx - ri, cy)
+            ])
 
         ex_x, ex_y = self.entry_pos
         entry_radius = CELL_SIZE // 4
