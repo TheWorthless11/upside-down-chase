@@ -84,6 +84,23 @@ Control Eleven as she attempts to escape a maze filled with Demogorgons using in
 
 ---
 
+## 🌳 State Space Tree
+
+This project’s AI can be understood as exploring a **state-space tree**: from a state $S_t$, Eleven chooses an action, Demogorgons respond, and the game either ends (win/lose) or transitions to $S_{t+1}$.
+
+- Full document (state definition, actions, terminal conditions): **[STATE_SPACE_TREE.md](STATE_SPACE_TREE.md)**
+
+### 2-ply tree shape (one round)
+
+```mermaid
+flowchart TD
+  S0["S_t (Snapshot)\nEleven + Demos + Coins + Key + Unlocked exits"]
+  S0 -->|Eleven action| E1["After Eleven"]
+  E1 -->|Demogorgon responses| S1["After Demogorgons + combat"]
+  S1 -->|terminal| T["Win/Lose"]
+  S1 -->|non-terminal| S2["S_{t+1}"]
+```
+
 ## 🧱 Project Structure
 
 The project is organized into modular components for maintainability and clarity:

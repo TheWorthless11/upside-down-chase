@@ -353,26 +353,21 @@ class Game:
         return score
 
     def choose_goal_for_eleven(self, snap: Snapshot) -> Tuple[int, int]:
-        """Choose the next objective for Eleven."""
-        collected = TOTAL_COINS - len(snap.coins)
-        exits = getattr(self.maze, "exit_positions", {self.maze.exit_pos})
-        unlocked = getattr(snap, "unlocked_exits", None) or set()
-
-        # If Eleven already unlocked an exit and has enough coins, rush there
-        if unlocked and collected >= 1:
-            return min(unlocked, key=lambda e: manhattan((snap.eleven.x, snap.eleven.y), e))
-
-        # If Eleven has the key and enough coins, head to nearest exit to use it
-        if snap.has_key and collected >= 1:
-            return min(exits, key=lambda e: manhattan((snap.eleven.x, snap.eleven.y), e))
-
-        # Otherwise prefer coins first, then key, then exit.
-        if snap.coins:
-            return min(snap.coins, key=lambda c: manhattan((snap.eleven.x, snap.eleven.y), c))
+        """Tells the AI what its current goal is!"""
+        
+        # GOAL 1: Find the key FIRST!
         if not snap.has_key:
             return snap.key_pos
-
-        return min(exits, key=lambda e: manhattan((snap.eleven.x, snap.eleven.y), e))
+            
+        # GOAL 2: Find AT LEAST ONE coin.
+        # If the map still has all the coins (TOTAL_COINS), she hasn't picked one up yet.
+        if len(snap.coins) == TOTAL_COINS:
+            # Find the closest coin to her and go get it!
+            return min(snap.coins, key=lambda c: manhattan((snap.eleven.x, snap.eleven.y), c))
+            
+        # GOAL 3: Go to the exit door!
+        # She only does this if she has the key AND at least one coin!
+        return self.maze.exit_pos
 
     def is_face_to_face(self, e: AgentState, d: AgentState) -> bool:
         """Check if Eleven and Demogorgon face each other."""
@@ -621,9 +616,7 @@ class Game:
             if manhattan(self.eleven.pos(), d.pos()) != 1:
                 continue
 
-            # Allow Eleven to shoot while she still has shots available.
-            # Previously the second shot required a long cooldown; allow up to
-            # `MAX_SHOOTS` immediate shots (no cooldown between them).
+            # If she has ammo, she shoots!
             if self.shoots_used < MAX_SHOOTS:
                 d.hp = 0
                 self.shoots_used += 1
@@ -631,11 +624,9 @@ class Game:
                 shots_remaining = MAX_SHOOTS - self.shoots_used
                 self.show_message(f"Eleven shot! Demogorgon defeated! ({shots_remaining} shots left)")
                 return
-            else:
-                self.eleven.hp = 0
-                self.show_message("Demogorgon caught and ate Eleven!")
-                return
-
+                
+            # THE FIX: We removed the "self.eleven.hp = 0" instant kill here.
+            # Now she just takes normal damage (HP -= 1) so the AI can actually survive!
     def post_turn_updates(self):
         """Update game state after each turn."""
         
@@ -658,17 +649,24 @@ class Game:
             return
 
         # ---------------------------------------------------------
-        # NEW UPDATED CODE: EXIT DOOR LOGIC
+        # NEW UPDATED CODE: EXIT DOOR LOGIC FIXES
         # ---------------------------------------------------------
-        # 3. Is Eleven standing on the exit door right now?
+        # Make sure the unlocked_exits list actually exists so the game doesn't crash!
+        if not hasattr(self.maze, "unlocked_exits"):
+            self.maze.unlocked_exits = set()
+
+        # 3. Is Eleven standing on ANY exit door square right now?
+        # The maze can generate multiple exits, so don't only check `exit_pos`.
         if self.maze.is_exit(self.eleven.x, self.eleven.y):
-            # If Eleven has a key and the door is not yet unlocked, use the key to unlock this door
-            if self.has_key and (self.eleven.pos() not in getattr(self.maze, "unlocked_exits", set())):
+            
+            collected = TOTAL_COINS - len(self.coins)
+            
+            # Scenario A: She has the key and needs to unlock the door for the first time
+            if self.has_key and self.eleven.pos() not in self.maze.unlocked_exits:
                 self.maze.unlocked_exits.add(self.eleven.pos())
                 self.has_key = False
-                self.show_message("You used the key to unlock this door!", 1400)
-                # If minimum required coins collected, unlocking here wins the game
-                collected = TOTAL_COINS - len(self.coins)
+                
+                # Check if she also has the coins to win right now
                 if collected >= 1:
                     self.game_over = True
                     self.victory = True
@@ -676,14 +674,25 @@ class Game:
                     self.points += 50
                     self.show_message("Eleven escaped the Upside Down!", 3200)
                     return
-            else:
-                # Door is locked (no key) or already unlocked but no coins
-                if not self.has_key and (self.eleven.pos() not in getattr(self.maze, "unlocked_exits", set())):
-                    self.show_message("The door is locked! Find the key!", 1000)
                 else:
-                    needed = max(0, 1 - (TOTAL_COINS - len(self.coins)))
-                    if needed > 0 and (self.eleven.pos() not in getattr(self.maze, "unlocked_exits", set())):
-                        self.show_message(f"The door is locked! Collect {needed} more coin(s)!", 1000)
+                    self.show_message("You unlocked the door, but need more coins!", 1400)
+                    
+            # Scenario B: THE FIX - The door is ALREADY unlocked from earlier!
+            elif self.eleven.pos() in self.maze.unlocked_exits:
+                if collected >= 1:
+                    # She has the coins and the door is open! SHE WINS!
+                    self.game_over = True
+                    self.victory = True
+                    self.winner = "Eleven"
+                    self.points += 50
+                    self.show_message("Eleven escaped the Upside Down!", 3200)
+                    return
+                else:
+                    self.show_message("The door is open, but you need more coins!", 1000)
+            
+            # Scenario C: Door is locked and she has no key
+            else:
+                self.show_message("The door is locked! Find the key!", 1000)
 
         # 4. Did Eleven step on the Key to pick it up?
         if not self.has_key and self.eleven.pos() == self.key_pos:
