@@ -238,9 +238,9 @@ class Maze:
             return pos
         if nxt in self.tunnels:
             exit_gates = self.tunnels[nxt]
-            if isinstance(exit_gates, list):
-                return random.choice(exit_gates)
-            return exit_gates
+            # Deterministic tunnel choice (first gate) to make behavior
+            # reproducible for planning and simulation.
+            return exit_gates[0] if isinstance(exit_gates, list) else exit_gates
         return nxt
 
     def draw(self, screen: pygame.Surface, offset_y: int, has_key: bool, hud_height: int):
@@ -313,7 +313,8 @@ def astar_next_step(
 
             if n in maze.tunnels:
                 exit_gates = maze.tunnels[n]
-                n = random.choice(exit_gates) if isinstance(exit_gates, list) else exit_gates
+                # Use a deterministic tunnel exit for pathfinding to make search stable
+                n = exit_gates[0] if isinstance(exit_gates, list) else exit_gates
 
             tentative = gscore[current] + 1
             if tentative < gscore.get(n, 10**9):
@@ -361,7 +362,8 @@ def astar_distance(
 
             if use_tunnels and n in maze.tunnels:
                 exit_gates = maze.tunnels[n]
-                n = random.choice(exit_gates) if isinstance(exit_gates, list) else exit_gates
+                # Deterministic choice for A* to keep planning reproducible
+                n = exit_gates[0] if isinstance(exit_gates, list) else exit_gates
 
             tentative = gscore[current] + 1
             if tentative < gscore.get(n, 10**9):

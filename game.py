@@ -9,7 +9,7 @@ from typing import List, Optional, Set, Tuple
 import pygame
 
 from entities import CARDINALS, Direction, OPPOSITE, Snapshot, add_pos, direction_between, manhattan, AgentState
-from maze import CELL_SIZE, GRID_SIZE, Maze, astar_distance
+from maze import CELL_SIZE, GRID_SIZE, Maze, astar_distance, astar_next_step
 from ai.mcts import mcts_action
 from ai.minimax import best_demo_move
 
@@ -39,6 +39,13 @@ COLOR_ELEVEN = (235, 150, 185)
 COLOR_DEMOGORGON = (170, 70, 85)
 COLOR_DETECTION = (155, 60, 70, 45)
 COLOR_DETECTION_INNER = (190, 70, 80, 25)
+
+# MCTS tuning defaults (adjust for quality vs speed)
+MCTS_ITERATIONS_DEFAULT = 200
+MCTS_ROLLOUT_DEPTH_DEFAULT = 12
+
+# Debug logging toggle
+LOG_DECISIONS = True
 
 
 def build_encounter_sound() -> Optional[pygame.mixer.Sound]:
@@ -193,6 +200,10 @@ class Game:
 
         self.reset()
 
+        # MCTS parameters (exposed so they can be tuned at runtime)
+        self.mcts_iters = MCTS_ITERATIONS_DEFAULT
+        self.mcts_depth = MCTS_ROLLOUT_DEPTH_DEFAULT
+
     def reset(self):
         """Reset game to initial state."""
         self.maze = Maze(GRID_SIZE)
@@ -286,23 +297,42 @@ class Game:
         elapsed = pygame.time.get_ticks() - self.game_start_time
         if elapsed >= TIME_LIMIT_MS or snap.eleven.hp <= 0:
             return True
-        if snap.has_key and len(snap.coins) == 0 and self.maze.is_exit(snap.eleven.x, snap.eleven.y):
-            return True
+        # Win if Eleven has collected at least one coin and stands on an exit
+        # that is either currently being unlocked (has key) or was already unlocked.
+        collected = TOTAL_COINS - len(snap.coins)
+        if collected >= 1 and self.maze.is_exit(snap.eleven.x, snap.eleven.y):
+            if snap.has_key:
+                return True
+            unlocked = getattr(snap, "unlocked_exits", None) or set()
+            if (snap.eleven.x, snap.eleven.y) in unlocked:
+                return True
         return False
 
     def reward(self, snap: Snapshot, initial_coins: int) -> float:
         """Calculate reward for a state."""
         if snap.eleven.hp <= 0:
             return -100.0
-        if snap.has_key and len(snap.coins) == 0 and self.maze.is_exit(snap.eleven.x, snap.eleven.y):
+
+        collected = initial_coins - len(snap.coins)
+        unlocked = getattr(snap, "unlocked_exits", None) or set()
+        on_exit = self.maze.is_exit(snap.eleven.x, snap.eleven.y)
+
+        # Big positive reward for reaching a winning state
+        if collected >= 1 and on_exit and (
+            snap.has_key or (snap.eleven.x, snap.eleven.y) in unlocked
+        ):
             elapsed = pygame.time.get_ticks() - self.game_start_time
             time_bonus = max(0, (TIME_LIMIT_MS - elapsed) / 1000.0)
             return 100.0 + time_bonus * 0.3
 
-        collected = initial_coins - len(snap.coins)
-        score = collected * 15.0
+        # Increase per-coin reward so rollouts prefer collecting coins earlier
+        score = collected * 20.0
+        # Bonus for having the key (encourages picking it up)
         if snap.has_key:
-            score += 25.0
+            score += 35.0
+        # Also reward having unlocked exits (key was used productively)
+        if unlocked:
+            score += 40.0
 
         target = self.choose_goal_for_eleven(snap)
         score -= manhattan((snap.eleven.x, snap.eleven.y), target) * 0.8
@@ -324,12 +354,24 @@ class Game:
 
     def choose_goal_for_eleven(self, snap: Snapshot) -> Tuple[int, int]:
         """Choose the next objective for Eleven."""
+        collected = TOTAL_COINS - len(snap.coins)
+        exits = getattr(self.maze, "exit_positions", {self.maze.exit_pos})
+        unlocked = getattr(snap, "unlocked_exits", None) or set()
+
+        # If Eleven already unlocked an exit and has enough coins, rush there
+        if unlocked and collected >= 1:
+            return min(unlocked, key=lambda e: manhattan((snap.eleven.x, snap.eleven.y), e))
+
+        # If Eleven has the key and enough coins, head to nearest exit to use it
+        if snap.has_key and collected >= 1:
+            return min(exits, key=lambda e: manhattan((snap.eleven.x, snap.eleven.y), e))
+
+        # Otherwise prefer coins first, then key, then exit.
         if snap.coins:
             return min(snap.coins, key=lambda c: manhattan((snap.eleven.x, snap.eleven.y), c))
         if not snap.has_key:
             return snap.key_pos
-        # Choose the nearest exit door as the goal
-        exits = getattr(self.maze, "exit_positions", {self.maze.exit_pos})
+
         return min(exits, key=lambda e: manhattan((snap.eleven.x, snap.eleven.y), e))
 
     def is_face_to_face(self, e: AgentState, d: AgentState) -> bool:
@@ -406,6 +448,7 @@ class Game:
         actions = self.valid_eleven_actions(snap)
         weighted = []
         target = self.choose_goal_for_eleven(snap)
+        collected = TOTAL_COINS - len(snap.coins)
 
         for action in actions:
             test = snap.clone()
@@ -419,9 +462,19 @@ class Game:
                     safe += min(dist, 5)
 
             goal_gain = -manhattan(pos, target)
-            w = safe * 2.3 + goal_gain * 1.8
+            # Stronger bias toward the chosen goal when it's important
+            goal_multiplier = 3.8 if (snap.has_key and collected >= 1) or (not snap.has_key and collected >= 1 and target == snap.key_pos) else 1.9
+            w = safe * 2.3 + goal_gain * goal_multiplier
+            # Prefer shooting when adjacent (more aggressive)
             if action[0] == "shoot":
-                w += 6
+                w += 8
+
+            # Strong bonus for stepping onto the exit when ready to escape
+            if self.maze.is_exit(pos[0], pos[1]) and collected >= 1:
+                unlocked = getattr(test, "unlocked_exits", None) or set()
+                if snap.has_key or pos in unlocked:
+                    w += 80
+
             weighted.append((w, action))
 
         weighted.sort(key=lambda x: x[0], reverse=True)
@@ -479,7 +532,9 @@ class Game:
                 adjacent_threat += 1.4
         score += adjacent_threat * 3.0
 
-        if snap.has_key and len(snap.coins) == 0:
+        # If Eleven has a key and has collected at least one coin, favor
+        # moving towards exits (Demogorgons will try to block exits).
+        if snap.has_key and (TOTAL_COINS - len(snap.coins)) >= 1:
             # Compute distance to the nearest exit door
             exits = getattr(self.maze, "exit_positions", {self.maze.exit_pos})
             exit_block_dist = min(astar_distance(self.maze, dpos, ex, blocked, use_tunnels=False) for ex in exits)
@@ -523,8 +578,29 @@ class Game:
             return
 
         snap = self.snapshot()
-
-        action = mcts_action(self, snap, iterations=80, rollout_depth=8)
+        # Hybrid policy: if Eleven has a key and has collected at least one coin,
+        # use fast A* to go straight to the nearest exit; otherwise use MCTS.
+        collected = TOTAL_COINS - len(snap.coins)
+        if LOG_DECISIONS:
+            demo_positions = [(d.x, d.y, d.hp) for d in snap.demogorgons]
+            print(f"Round: Eleven@{snap.eleven.pos()} key={snap.has_key} collected={collected} demos={demo_positions}")
+        if snap.has_key and collected >= 1:
+            exits = getattr(self.maze, "exit_positions", {self.maze.exit_pos})
+            goal = min(exits, key=lambda e: manhattan((snap.eleven.x, snap.eleven.y), e))
+            blocked = {(d.x, d.y) for d in snap.demogorgons if d.hp > 0}
+            nxt = astar_next_step(self.maze, snap.eleven.pos(), goal, blocked)
+            dir = direction_between((snap.eleven.x, snap.eleven.y), nxt)
+            if dir != Direction.NONE:
+                action = ("move", dir)
+            else:
+                action = mcts_action(self, snap, iterations=self.mcts_iters, rollout_depth=self.mcts_depth)
+            if LOG_DECISIONS:
+                print(f"  A* chosen next {nxt} -> {dir}")
+        else:
+            # Use configured MCTS budget (tuned for speed/quality tradeoff)
+            action = mcts_action(self, snap, iterations=self.mcts_iters, rollout_depth=self.mcts_depth)
+            if LOG_DECISIONS:
+                print(f"  MCTS chosen {action}")
         self.apply_eleven_action(snap, action)
 
         self.apply_demogorgon_turn(snap)
@@ -545,15 +621,10 @@ class Game:
             if manhattan(self.eleven.pos(), d.pos()) != 1:
                 continue
 
-            can_shoot = False
-
-            if self.shoots_used == 0:
-                can_shoot = True
-            elif self.shoots_used >= 1:
-                time_since_last_shoot = now - self.last_shoot_time
-                can_shoot = time_since_last_shoot >= SHOOT_COOLDOWN_MS
-
-            if can_shoot and self.shoots_used < MAX_SHOOTS:
+            # Allow Eleven to shoot while she still has shots available.
+            # Previously the second shot required a long cooldown; allow up to
+            # `MAX_SHOOTS` immediate shots (no cooldown between them).
+            if self.shoots_used < MAX_SHOOTS:
                 d.hp = 0
                 self.shoots_used += 1
                 self.last_shoot_time = now
@@ -596,8 +667,9 @@ class Game:
                 self.maze.unlocked_exits.add(self.eleven.pos())
                 self.has_key = False
                 self.show_message("You used the key to unlock this door!", 1400)
-                # If all coins already collected, unlocking here wins the game
-                if len(self.coins) == 0:
+                # If minimum required coins collected, unlocking here wins the game
+                collected = TOTAL_COINS - len(self.coins)
+                if collected >= 1:
                     self.game_over = True
                     self.victory = True
                     self.winner = "Eleven"
@@ -608,8 +680,10 @@ class Game:
                 # Door is locked (no key) or already unlocked but no coins
                 if not self.has_key and (self.eleven.pos() not in getattr(self.maze, "unlocked_exits", set())):
                     self.show_message("The door is locked! Find the key!", 1000)
-                elif len(self.coins) > 0 and (self.eleven.pos() not in getattr(self.maze, "unlocked_exits", set())):
-                    self.show_message(f"The door is locked! Collect {len(self.coins)} more coins!", 1000)
+                else:
+                    needed = max(0, 1 - (TOTAL_COINS - len(self.coins)))
+                    if needed > 0 and (self.eleven.pos() not in getattr(self.maze, "unlocked_exits", set())):
+                        self.show_message(f"The door is locked! Collect {needed} more coin(s)!", 1000)
 
         # 4. Did Eleven step on the Key to pick it up?
         if not self.has_key and self.eleven.pos() == self.key_pos:
@@ -732,26 +806,13 @@ class Game:
 
         # --- Row 2: shoot status (left) + demogorgon count (right) ---
         row2_y = 32
-        if self.shoots_used == 0:
-            can_shoot_now = True
-        elif self.shoots_used >= 1:
-            time_since_shoot = now - self.last_shoot_time
-            can_shoot_now = time_since_shoot >= SHOOT_COOLDOWN_MS
-        else:
-            can_shoot_now = False
-
-        if can_shoot_now and self.shoots_used < MAX_SHOOTS:
+        # Ready to shoot while shots remain; no cooldown between immediate shots
+        if self.shoots_used < MAX_SHOOTS:
             shoot_str = f"Shoot: READY ({self.shoots_used + 1}/{MAX_SHOOTS})"
             shoot_color = (100, 255, 100)
-        elif self.shoots_used >= MAX_SHOOTS:
+        else:
             shoot_str = f"Shoot: USED ({self.shoots_used}/{MAX_SHOOTS})"
             shoot_color = (150, 150, 150)
-        else:
-            time_since_shoot = now - self.last_shoot_time
-            cooldown_remaining_ms = SHOOT_COOLDOWN_MS - time_since_shoot
-            cooldown_sec = (cooldown_remaining_ms + 999) // 1000
-            shoot_str = f"Shoot: {cooldown_sec}s ({self.shoots_used + 1}/{MAX_SHOOTS})"
-            shoot_color = (255, 200, 70)
 
         shoot_surf = self.small_font.render(shoot_str, True, shoot_color)
         self.screen.blit(shoot_surf, (8, row2_y))
