@@ -89,6 +89,7 @@ Control Eleven as she attempts to escape a maze filled with Demogorgons using in
 This project’s AI can be understood as exploring a **state-space tree**: from a state $S_t$, Eleven chooses an action, Demogorgons respond, and the game either ends (win/lose) or transitions to $S_{t+1}$.
 
 - Full document (state definition, actions, terminal conditions): **[STATE_SPACE_TREE.md](STATE_SPACE_TREE.md)**
+- Slide-ready compact diagram: **[STATE_SPACE_TREE_SLIDE.md](STATE_SPACE_TREE_SLIDE.md)**
 
 ### 2-ply tree shape (one round)
 

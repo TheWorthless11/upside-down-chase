@@ -2,6 +2,8 @@
 
 This document describes the **search/state space** for the game in a way that matches the code in `game.py`, `maze.py`, and `entities.py`.
 
+**Slide version (compact diagram):** [STATE_SPACE_TREE_SLIDE.md](STATE_SPACE_TREE_SLIDE.md)
+
 ## 1) State definition
 
 The AI-facing game state is represented by `Snapshot` (see `entities.py`), plus the maze layout (walls, tunnels, exits).
